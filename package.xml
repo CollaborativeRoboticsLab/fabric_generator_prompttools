@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fabric_generator_prompttools</name>
+  <version>0.2.0</version>
+  <description>PromptTools generator plugins for Fabric plan generation.</description>
+
+  <maintainer email="kalanaratnayake95@gmail.com">Kalana Ratnayake</maintainer>
+  <maintainer email="kalana.ratnayakemudiyanselage@canberra.edu.au">Kalana Ratnayake</maintainer>
+
+  <author email="kalana.ratnayakemudiyanselage@canberra.edu.au">Kalana Ratnayake</author>
+  <author email="kalanaratnayake95@gmail.com">Kalana Ratnayake</author>
+  
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>nlohmann_json</depend>
+  <depend>pluginlib</depend>
+  <depend>fabric_base</depend>
+  <depend>prompt_msgs</depend>
+  <depend>capabilities2_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

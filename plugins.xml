@@ -1,0 +1,7 @@
+<library path="fabric_generator_prompttools">
+  <class type="fabric::PromptToolsGenerator" base_class_type="fabric::GenerationBase">
+    <description>
+      Generates a fabric::Plan object using prompt tools for Fabric plan generation.
+    </description>
+  </class>
+</library>
