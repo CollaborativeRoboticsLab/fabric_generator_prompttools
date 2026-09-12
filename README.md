@@ -10,7 +10,7 @@ The package exports `fabric::PromptToolsGenerator` as a `fabric::GenerationBase`
 
 At runtime the plugin:
 
-1. Requests runnable capability specifications from `capabilities2/get_runnable_specs`.
+1. Requests runnable capability specifications from `/capabilities/get_runnable_specs`.
 2. Builds a prompt that asks for a valid Fabric XML plan for the task.
 3. Sends that prompt to `prompt/prompt`.
 4. Parses the returned JSON payload into a `fabric::Plan`.
@@ -50,13 +50,16 @@ colcon build
 For the plugin to initialize and generate plans successfully, these components must already be available:
 
 - Fabric plugin infrastructure
-- The `capabilities2/get_runnable_specs` service
-- The `prompt/prompt` service
+- The `/capabilities/get_runnable_specs` service
+- The `/prompt/prompt` service
 - The `capabilities2_msgs/srv/GetRunnableSpecs` interface
 - The `prompt_msgs/srv/Prompt` interface
 
 The plugin currently reads these parameters from the hosting node:
 
+- `PromptToolsGenerator.service_wait_timeout_sec`
+- `PromptToolsGenerator.services.prompt`
+- `PromptToolsGenerator.services.get_runnable_specs`
 - `PromptToolsGenerator.model_family`
 - `PromptToolsGenerator.model`
 - `PromptToolsGenerator.use_cache`

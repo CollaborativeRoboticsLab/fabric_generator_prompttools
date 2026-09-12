@@ -37,19 +37,30 @@ public:
   {
     initialize_base(node, "PromptToolsGenerator");
 
-    prompt_service_client_ = node_->create_client<Prompt>("prompt/prompt");
+    node_->declare_parameter<int>(plugin_name_ + ".service_wait_timeout_sec", 10);
+    service_wait_timeout_sec_ = node_->get_parameter(plugin_name_ + ".service_wait_timeout_sec").as_int();
 
-    if (!prompt_service_client_->wait_for_service(std::chrono::seconds(10)))
+    node_->declare_parameter<std::string>(plugin_name_ + ".services.prompt", "/prompt/prompt");
+    node_->declare_parameter<std::string>(plugin_name_ + ".services.get_runnable_specs",
+                                          "/capabilities/get_runnable_specs");
+    node_->get_parameter(plugin_name_ + ".services.prompt", prompt_service_name_);
+    node_->get_parameter(plugin_name_ + ".services.get_runnable_specs", runnable_specs_service_name_);
+
+    prompt_service_client_ = node_->create_client<Prompt>(prompt_service_name_);
+
+    if (!prompt_service_client_->wait_for_service(std::chrono::seconds(service_wait_timeout_sec_)))
     {
-      RCLCPP_ERROR(node_->get_logger(), "Prompt service not available after waiting at prompt/prompt");
+      RCLCPP_ERROR(node_->get_logger(), "Prompt service not available after waiting at %s",
+                   prompt_service_name_.c_str());
       throw fabric::fabric_exception("Prompt service not available after waiting");
     }
 
-    runnable_spec_service_client_ = node_->create_client<RunnableSpec>("capabilities2/get_runnable_specs");
+    runnable_spec_service_client_ = node_->create_client<RunnableSpec>(runnable_specs_service_name_);
 
-    if (!runnable_spec_service_client_->wait_for_service(std::chrono::seconds(10)))
+    if (!runnable_spec_service_client_->wait_for_service(std::chrono::seconds(service_wait_timeout_sec_)))
     {
-      RCLCPP_ERROR(node_->get_logger(), "Runnable spec service not available after waiting at capabilities2/get_runnable_specs");
+      RCLCPP_ERROR(node_->get_logger(), "Runnable spec service not available after waiting at %s",
+                   runnable_specs_service_name_.c_str());
       throw fabric::fabric_exception("Runnable spec service not available after waiting");
     }
 
@@ -194,6 +205,9 @@ protected:
   RunnableSpec::Response::SharedPtr specs_response_;
   Prompt::Response::SharedPtr prompt_response_;
 
+  int service_wait_timeout_sec_;
+  std::string prompt_service_name_;
+  std::string runnable_specs_service_name_;
   std::string model_family_;
   std::string model_;
   bool use_cache_;
