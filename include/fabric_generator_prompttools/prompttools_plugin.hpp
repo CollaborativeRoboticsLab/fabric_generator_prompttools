@@ -38,7 +38,9 @@ public:
     initialize_base(node, "PromptToolsGenerator");
 
     node_->declare_parameter<int>(plugin_name_ + ".service_wait_timeout_sec", 10);
+    node_->declare_parameter<int>(plugin_name_ + ".prompt_request_timeout_sec", 90);
     service_wait_timeout_sec_ = node_->get_parameter(plugin_name_ + ".service_wait_timeout_sec").as_int();
+    prompt_request_timeout_sec_ = node_->get_parameter(plugin_name_ + ".prompt_request_timeout_sec").as_int();
 
     node_->declare_parameter<std::string>(plugin_name_ + ".services.prompt", "/prompt/prompt");
     node_->declare_parameter<std::string>(plugin_name_ + ".services.get_runnable_specs",
@@ -83,33 +85,57 @@ public:
    */
   fabric::Plan generate(const std::string& task, const std::string& uuid, bool flush) override
   {
+    RCLCPP_INFO(node_->get_logger(),
+                "PromptToolsGenerator starting generation: task='%s' uuid='%s' flush=%s model_family='%s' model='%s'",
+                task.c_str(), uuid.c_str(), flush ? "true" : "false", model_family_.c_str(), model_.c_str());
+
     auto runnable_spec_request = std::make_shared<RunnableSpec::Request>();
 
     std::mutex block_mutex;
-    std::unique_lock<std::mutex> lockSpec(block_mutex);
     std::condition_variable cv;
     bool specs_completed = false;
     bool prompt_completed = false;
+    specs_response_.reset();
+    prompt_response_.reset();
 
-    runnable_spec_service_client_->async_send_request(runnable_spec_request,
-                                                      [this, &specs_completed, &cv](typename rclcpp::Client<RunnableSpec>::SharedFuture future) {
-                                                        if (!future.valid())
-                                                        {
-                                                          RCLCPP_ERROR(node_->get_logger(), "GetRunnable result call failed");
-                                                        }
-                                                        else
-                                                        {
-                                                          RCLCPP_INFO(node_->get_logger(), "GetRunnable result call succeeded");
+    {
+      std::unique_lock<std::mutex> lock_spec(block_mutex);
 
-                                                          specs_response_ = future.get();
-                                                        }
+      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator requesting runnable specifications from %s",
+                  runnable_specs_service_name_.c_str());
+      runnable_spec_service_client_->async_send_request(runnable_spec_request,
+                                                        [this, &specs_completed, &cv](typename rclcpp::Client<RunnableSpec>::SharedFuture future) {
+                                                          if (!future.valid())
+                                                          {
+                                                            RCLCPP_ERROR(node_->get_logger(),
+                                                                         "PromptToolsGenerator runnable specification request failed");
+                                                          }
+                                                          else
+                                                          {
+                                                            specs_response_ = future.get();
+                                                            RCLCPP_INFO(node_->get_logger(),
+                                                                        "PromptToolsGenerator received %zu runnable specifications",
+                                                                        specs_response_->runnable_specs.size());
+                                                          }
 
-                                                        specs_completed = true;
-                                                        cv.notify_all();
-                                                      });
+                                                          specs_completed = true;
+                                                          cv.notify_all();
+                                                        });
 
-    // Conditional wait
-    cv.wait(lockSpec, [&specs_completed] { return specs_completed; });
+      const bool specs_ready = cv.wait_for(lock_spec, std::chrono::seconds(service_wait_timeout_sec_),
+                                           [&specs_completed] { return specs_completed; });
+
+      if (!specs_ready)
+      {
+        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for runnable specifications from " +
+                                       runnable_specs_service_name_);
+      }
+    }
+
+    if (!specs_response_)
+    {
+      throw fabric::fabric_exception("PromptToolsGenerator did not receive runnable specifications");
+    }
 
     std::string capabilities_info = "Capabilities information:\n";
 
@@ -147,27 +173,54 @@ public:
 
     prompt_request->prompt.options.push_back(modelOption2);
 
-    std::unique_lock<std::mutex> lockPrompt(block_mutex);
+    {
+      std::unique_lock<std::mutex> lock_prompt(block_mutex);
 
-    prompt_service_client_->async_send_request(prompt_request, [this, &prompt_completed, &cv](typename rclcpp::Client<Prompt>::SharedFuture future) {
-      if (!future.valid())
+      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator sending prompt request to %s",
+                  prompt_service_name_.c_str());
+      prompt_service_client_->async_send_request(prompt_request, [this, &prompt_completed, &cv](typename rclcpp::Client<Prompt>::SharedFuture future) {
+        if (!future.valid())
+        {
+          RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request failed");
+        }
+        else
+        {
+          prompt_response_ = future.get();
+          RCLCPP_INFO(node_->get_logger(),
+                      "PromptToolsGenerator received prompt response: success=%s buffered=%s response_size=%zu",
+                      prompt_response_->response.success ? "true" : "false",
+                      prompt_response_->response.buffered ? "true" : "false",
+                      prompt_response_->response.response.size());
+        }
+
+        prompt_completed = true;
+        cv.notify_all();
+      });
+
+      const bool prompt_ready = cv.wait_for(lock_prompt, std::chrono::seconds(prompt_request_timeout_sec_),
+                                            [&prompt_completed] { return prompt_completed; });
+
+      if (!prompt_ready)
       {
-        RCLCPP_ERROR(node_->get_logger(), "GetRunnable result call failed");
+        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for prompt response from " +
+                                       prompt_service_name_);
       }
-      else
-      {
-        RCLCPP_INFO(node_->get_logger(), "GetRunnable result call succeeded");
+    }
 
-        prompt_response_ = future.get();
-      }
+    if (!prompt_response_)
+    {
+      throw fabric::fabric_exception("PromptToolsGenerator did not receive a prompt response");
+    }
 
-      prompt_completed = true;
-      cv.notify_all();
-    });
+    if (!prompt_response_->response.success)
+    {
+      RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request returned failure: %s",
+                   prompt_response_->response.response.c_str());
+      throw fabric::fabric_exception("PromptToolsGenerator prompt request failed: " +
+                                     prompt_response_->response.response);
+    }
 
-    // Conditional wait
-    cv.wait(lockPrompt, [&prompt_completed] { return prompt_completed; });
-    RCLCPP_INFO(node_->get_logger(), "Generation completed. Result received.");
+    RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator generation completed. Parsing prompt response.");
 
     fabric::Plan plan;
 
@@ -206,6 +259,7 @@ protected:
   Prompt::Response::SharedPtr prompt_response_;
 
   int service_wait_timeout_sec_;
+  int prompt_request_timeout_sec_;
   std::string prompt_service_name_;
   std::string runnable_specs_service_name_;
   std::string model_family_;
