@@ -43,8 +43,7 @@ public:
     prompt_request_timeout_sec_ = node_->get_parameter(plugin_name_ + ".prompt_request_timeout_sec").as_int();
 
     node_->declare_parameter<std::string>(plugin_name_ + ".services.prompt", "/prompt/prompt");
-    node_->declare_parameter<std::string>(plugin_name_ + ".services.get_runnable_specs",
-                                          "/capabilities/get_runnable_specs");
+    node_->declare_parameter<std::string>(plugin_name_ + ".services.get_runnable_specs", "/capabilities/get_runnable_specs");
     node_->get_parameter(plugin_name_ + ".services.prompt", prompt_service_name_);
     node_->get_parameter(plugin_name_ + ".services.get_runnable_specs", runnable_specs_service_name_);
 
@@ -52,8 +51,7 @@ public:
 
     if (!prompt_service_client_->wait_for_service(std::chrono::seconds(service_wait_timeout_sec_)))
     {
-      RCLCPP_ERROR(node_->get_logger(), "Prompt service not available after waiting at %s",
-                   prompt_service_name_.c_str());
+      RCLCPP_ERROR(node_->get_logger(), "Prompt service not available after waiting at %s", prompt_service_name_.c_str());
       throw fabric::fabric_exception("Prompt service not available after waiting");
     }
 
@@ -61,8 +59,7 @@ public:
 
     if (!runnable_spec_service_client_->wait_for_service(std::chrono::seconds(service_wait_timeout_sec_)))
     {
-      RCLCPP_ERROR(node_->get_logger(), "Runnable spec service not available after waiting at %s",
-                   runnable_specs_service_name_.c_str());
+      RCLCPP_ERROR(node_->get_logger(), "Runnable spec service not available after waiting at %s", runnable_specs_service_name_.c_str());
       throw fabric::fabric_exception("Runnable spec service not available after waiting");
     }
 
@@ -78,15 +75,14 @@ public:
   }
 
   /**
-   * @brief Parse the given XML plan.
+   * @brief Generate a plan through the prompt service.
    *
    * @param document The XMLDocument representing the plan.
    * @param plan The parsed plan.
    */
-  fabric::Plan generate(const std::string& task, const std::string& uuid, bool flush) override
+  fabric::plan::Plan generate(const std::string& task, const std::string& uuid, bool flush) override
   {
-    RCLCPP_INFO(node_->get_logger(),
-                "PromptToolsGenerator starting generation: task='%s' uuid='%s' flush=%s model_family='%s' model='%s'",
+    RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator starting generation: task='%s' uuid='%s' flush=%s model_family='%s' model='%s'",
                 task.c_str(), uuid.c_str(), flush ? "true" : "false", model_family_.c_str(), model_.c_str());
 
     auto runnable_spec_request = std::make_shared<RunnableSpec::Request>();
@@ -101,34 +97,29 @@ public:
     {
       std::unique_lock<std::mutex> lock_spec(block_mutex);
 
-      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator requesting runnable specifications from %s",
-                  runnable_specs_service_name_.c_str());
-      runnable_spec_service_client_->async_send_request(runnable_spec_request,
-                                                        [this, &specs_completed, &cv](typename rclcpp::Client<RunnableSpec>::SharedFuture future) {
-                                                          if (!future.valid())
-                                                          {
-                                                            RCLCPP_ERROR(node_->get_logger(),
-                                                                         "PromptToolsGenerator runnable specification request failed");
-                                                          }
-                                                          else
-                                                          {
-                                                            specs_response_ = future.get();
-                                                            RCLCPP_INFO(node_->get_logger(),
-                                                                        "PromptToolsGenerator received %zu runnable specifications",
-                                                                        specs_response_->runnable_specs.size());
-                                                          }
+      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator requesting runnable specifications from %s", runnable_specs_service_name_.c_str());
+      runnable_spec_service_client_->async_send_request(
+          runnable_spec_request, [this, &specs_completed, &cv](typename rclcpp::Client<RunnableSpec>::SharedFuture future) {
+            if (!future.valid())
+            {
+              RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator runnable specification request failed");
+            }
+            else
+            {
+              specs_response_ = future.get();
+              RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator received %zu runnable specifications", specs_response_->runnable_specs.size());
+            }
 
-                                                          specs_completed = true;
-                                                          cv.notify_all();
-                                                        });
+            specs_completed = true;
+            cv.notify_all();
+          });
 
-      const bool specs_ready = cv.wait_for(lock_spec, std::chrono::seconds(service_wait_timeout_sec_),
-                                           [&specs_completed] { return specs_completed; });
+      const bool specs_ready =
+          cv.wait_for(lock_spec, std::chrono::seconds(service_wait_timeout_sec_), [&specs_completed] { return specs_completed; });
 
       if (!specs_ready)
       {
-        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for runnable specifications from " +
-                                       runnable_specs_service_name_);
+        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for runnable specifications from " + runnable_specs_service_name_);
       }
     }
 
@@ -139,16 +130,16 @@ public:
 
     std::string capabilities_info = "Capabilities information:\n";
 
-    for (int i = 0; i < specs_response_->runnable_specs.size(); ++i)
+    for (std::size_t i = 0; i < specs_response_->runnable_specs.size(); ++i)
     {
       capabilities_info += "Capability: " + specs_response_->index_of_specs[i] + "\n";
       capabilities_info += "Description: " + specs_response_->runnable_specs[i].spec + "\n\n";
     }
 
     std::string text = "Build a xml plan based on the following capabilities to achieve the task: " + task +
-               ". Return the xml plan along with a brief reasoning summary for the plan in the response. The response should be in the "
-               "following json format: {\"plan\": \"<xml_plan>\", \"reasoning\": \"<brief_reasoning_summary>\"}. The xml plan should be "
-               "well-formed and valid.";
+                       ". Return the xml plan along with a brief reasoning summary for the plan in the response. The response should be in the "
+                       "following json format: {\"plan\": \"<xml_plan>\", \"reasoning\": \"<brief_reasoning_summary>\"}. The xml plan should be "
+                       "well-formed and valid.";
 
     auto prompt_request = std::make_shared<Prompt::Request>();
 
@@ -176,34 +167,31 @@ public:
     {
       std::unique_lock<std::mutex> lock_prompt(block_mutex);
 
-      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator sending prompt request to %s",
-                  prompt_service_name_.c_str());
-      prompt_service_client_->async_send_request(prompt_request, [this, &prompt_completed, &cv](typename rclcpp::Client<Prompt>::SharedFuture future) {
-        if (!future.valid())
-        {
-          RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request failed");
-        }
-        else
-        {
-          prompt_response_ = future.get();
-          RCLCPP_INFO(node_->get_logger(),
-                      "PromptToolsGenerator received prompt response: success=%s buffered=%s response_size=%zu",
-                      prompt_response_->response.success ? "true" : "false",
-                      prompt_response_->response.buffered ? "true" : "false",
-                      prompt_response_->response.response.size());
-        }
+      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator sending prompt request to %s", prompt_service_name_.c_str());
+      prompt_service_client_->async_send_request(
+          prompt_request, [this, &prompt_completed, &cv](typename rclcpp::Client<Prompt>::SharedFuture future) {
+            if (!future.valid())
+            {
+              RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request failed");
+            }
+            else
+            {
+              prompt_response_ = future.get();
+              RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator received prompt response: success=%s buffered=%s response_size=%zu",
+                          prompt_response_->response.success ? "true" : "false", prompt_response_->response.buffered ? "true" : "false",
+                          prompt_response_->response.response.size());
+            }
 
-        prompt_completed = true;
-        cv.notify_all();
-      });
+            prompt_completed = true;
+            cv.notify_all();
+          });
 
-      const bool prompt_ready = cv.wait_for(lock_prompt, std::chrono::seconds(prompt_request_timeout_sec_),
-                                            [&prompt_completed] { return prompt_completed; });
+      const bool prompt_ready =
+          cv.wait_for(lock_prompt, std::chrono::seconds(prompt_request_timeout_sec_), [&prompt_completed] { return prompt_completed; });
 
       if (!prompt_ready)
       {
-        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for prompt response from " +
-                                       prompt_service_name_);
+        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for prompt response from " + prompt_service_name_);
       }
     }
 
@@ -214,15 +202,13 @@ public:
 
     if (!prompt_response_->response.success)
     {
-      RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request returned failure: %s",
-                   prompt_response_->response.response.c_str());
-      throw fabric::fabric_exception("PromptToolsGenerator prompt request failed: " +
-                                     prompt_response_->response.response);
+      RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request returned failure: %s", prompt_response_->response.response.c_str());
+      throw fabric::fabric_exception("PromptToolsGenerator prompt request failed: " + prompt_response_->response.response);
     }
 
     RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator generation completed. Parsing prompt response.");
 
-    fabric::Plan plan;
+    fabric::plan::Plan plan;
 
     try
     {

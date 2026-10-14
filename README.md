@@ -13,7 +13,7 @@ At runtime the plugin:
 1. Requests runnable capability specifications from `/capabilities/get_runnable_specs`.
 2. Builds a prompt that asks for a valid Fabric XML plan for the task.
 3. Sends that prompt to `prompt/prompt`.
-4. Parses the returned JSON payload into a `fabric::Plan`.
+4. Parses the returned JSON payload into a `fabric::plan::Plan`.
 
 ## Dependency Boundary
 
