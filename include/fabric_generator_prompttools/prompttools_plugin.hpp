@@ -9,7 +9,6 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <fabric_base/generation_base.hpp>
-#include <prompt_msgs/srv/prompt.hpp>
 #include <capabilities2_msgs/srv/get_runnable_specs.hpp>
 
 namespace fabric
@@ -21,7 +20,6 @@ namespace fabric
  */
 class PromptToolsGenerator : public GenerationBase
 {
-  using Prompt = prompt_msgs::srv::Prompt;
   using RunnableSpec = capabilities2_msgs::srv::GetRunnableSpecs;
 
 public:
@@ -42,18 +40,8 @@ public:
     service_wait_timeout_sec_ = node_->get_parameter(plugin_name_ + ".service_wait_timeout_sec").as_int();
     prompt_request_timeout_sec_ = node_->get_parameter(plugin_name_ + ".prompt_request_timeout_sec").as_int();
 
-    node_->declare_parameter<std::string>(plugin_name_ + ".services.prompt", "/prompt/prompt");
     node_->declare_parameter<std::string>(plugin_name_ + ".services.get_runnable_specs", "/capabilities/get_runnable_specs");
-    node_->get_parameter(plugin_name_ + ".services.prompt", prompt_service_name_);
     node_->get_parameter(plugin_name_ + ".services.get_runnable_specs", runnable_specs_service_name_);
-
-    prompt_service_client_ = node_->create_client<Prompt>(prompt_service_name_);
-
-    if (!prompt_service_client_->wait_for_service(std::chrono::seconds(service_wait_timeout_sec_)))
-    {
-      RCLCPP_ERROR(node_->get_logger(), "Prompt service not available after waiting at %s", prompt_service_name_.c_str());
-      throw fabric::fabric_exception("Prompt service not available after waiting");
-    }
 
     runnable_spec_service_client_ = node_->create_client<RunnableSpec>(runnable_specs_service_name_);
 
@@ -85,14 +73,17 @@ public:
     RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator starting generation: task='%s' uuid='%s' flush=%s model_family='%s' model='%s'",
                 task.c_str(), uuid.c_str(), flush ? "true" : "false", model_family_.c_str(), model_.c_str());
 
+    if (!analysis_plugin_)
+    {
+      throw fabric::fabric_exception("PromptToolsGenerator requires a configured LLM analysis plugin.");
+    }
+
     auto runnable_spec_request = std::make_shared<RunnableSpec::Request>();
 
     std::mutex block_mutex;
     std::condition_variable cv;
     bool specs_completed = false;
-    bool prompt_completed = false;
     specs_response_.reset();
-    prompt_response_.reset();
 
     {
       std::unique_lock<std::mutex> lock_spec(block_mutex);
@@ -141,69 +132,22 @@ public:
                        "following json format: {\"plan\": \"<xml_plan>\", \"reasoning\": \"<brief_reasoning_summary>\"}. The xml plan should be "
                        "well-formed and valid.";
 
-    auto prompt_request = std::make_shared<Prompt::Request>();
+    const LlmPromptResult prompt_result = analysis_plugin_->prompt(LlmPromptRequest{
+      "",
+      capabilities_info + "\n" + text,
+      uuid,
+      model_family_,
+      model_,
+      use_cache_,
+      flush,
+      use_chat_mode_,
+      false,
+    });
 
-    prompt_request->uuid = uuid;
-    prompt_request->prompt.prompt = capabilities_info + "\n" + text;
-
-    prompt_request->prompt.model_family = "openai";
-    prompt_request->prompt.use_cache = true;
-    prompt_request->prompt.use_chat_mode = false;
-    prompt_request->prompt.flush_cache = flush;
-
-    prompt_msgs::msg::ModelOption modelOption1;
-    modelOption1.key = "model";
-    modelOption1.value = "gpt-5.1";
-
-    prompt_request->prompt.options.push_back(modelOption1);
-
-    prompt_msgs::msg::ModelOption modelOption2;
-    modelOption2.key = "stream";
-    modelOption2.value = "false";
-    modelOption2.type = prompt_msgs::msg::ModelOption::BOOL_TYPE;
-
-    prompt_request->prompt.options.push_back(modelOption2);
-
+    if (!prompt_result.success)
     {
-      std::unique_lock<std::mutex> lock_prompt(block_mutex);
-
-      RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator sending prompt request to %s", prompt_service_name_.c_str());
-      prompt_service_client_->async_send_request(
-          prompt_request, [this, &prompt_completed, &cv](typename rclcpp::Client<Prompt>::SharedFuture future) {
-            if (!future.valid())
-            {
-              RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request failed");
-            }
-            else
-            {
-              prompt_response_ = future.get();
-              RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator received prompt response: success=%s buffered=%s response_size=%zu",
-                          prompt_response_->response.success ? "true" : "false", prompt_response_->response.buffered ? "true" : "false",
-                          prompt_response_->response.response.size());
-            }
-
-            prompt_completed = true;
-            cv.notify_all();
-          });
-
-      const bool prompt_ready =
-          cv.wait_for(lock_prompt, std::chrono::seconds(prompt_request_timeout_sec_), [&prompt_completed] { return prompt_completed; });
-
-      if (!prompt_ready)
-      {
-        throw fabric::fabric_exception("PromptToolsGenerator timed out waiting for prompt response from " + prompt_service_name_);
-      }
-    }
-
-    if (!prompt_response_)
-    {
-      throw fabric::fabric_exception("PromptToolsGenerator did not receive a prompt response");
-    }
-
-    if (!prompt_response_->response.success)
-    {
-      RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request returned failure: %s", prompt_response_->response.response.c_str());
-      throw fabric::fabric_exception("PromptToolsGenerator prompt request failed: " + prompt_response_->response.response);
+      RCLCPP_ERROR(node_->get_logger(), "PromptToolsGenerator prompt request returned failure: %s", prompt_result.error_message.c_str());
+      throw fabric::fabric_exception("PromptToolsGenerator prompt request failed: " + prompt_result.error_message);
     }
 
     RCLCPP_INFO(node_->get_logger(), "PromptToolsGenerator generation completed. Parsing prompt response.");
@@ -212,7 +156,7 @@ public:
 
     try
     {
-      const auto parsed_response = nlohmann::json::parse(prompt_response_->response.response);
+      const auto parsed_response = nlohmann::json::parse(prompt_result.response);
 
       plan.plan = parsed_response.at("plan").get<std::string>();
       if (parsed_response.contains("reasoning") && !parsed_response.at("reasoning").is_null())
@@ -223,7 +167,7 @@ public:
     catch (const nlohmann::json::exception& e)
     {
       RCLCPP_WARN(node_->get_logger(), "Failed to parse prompt response as JSON: %s", e.what());
-      plan.plan = prompt_response_->response.response;
+      plan.plan = prompt_result.response;
       plan.reasoning.clear();
     }
 
@@ -232,21 +176,14 @@ public:
 
 protected:
   /**
-   * @brief Shared pointer to the experience action client.
-   */
-  rclcpp::Client<Prompt>::SharedPtr prompt_service_client_;
-
-  /**
    * @brief Shared pointer to the capabilities2 runnable spec service.
    */
   rclcpp::Client<RunnableSpec>::SharedPtr runnable_spec_service_client_;
 
   RunnableSpec::Response::SharedPtr specs_response_;
-  Prompt::Response::SharedPtr prompt_response_;
 
   int service_wait_timeout_sec_;
   int prompt_request_timeout_sec_;
-  std::string prompt_service_name_;
   std::string runnable_specs_service_name_;
   std::string model_family_;
   std::string model_;

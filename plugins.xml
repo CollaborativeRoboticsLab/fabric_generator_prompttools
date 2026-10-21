@@ -4,4 +4,9 @@
       Generates a fabric::plan::Plan object using prompt tools for Fabric plan generation.
     </description>
   </class>
+  <class type="fabric::PromptToolsLlmAnalysis" base_class_type="fabric::LlmAnalysisBase">
+    <description>
+      Shared PromptTools-backed prompt, embedding, and tokenization plugin for Fabric analysis clients.
+    </description>
+  </class>
 </library>
